@@ -14,16 +14,26 @@ FOLD_OPTIONS = ["", "4p", "6p", "8p", "16p", "その他"]
 IN_PROGRESS_HEADER = ["記録ID", "製品名", "工程名", "詳細", "開始時間", "終了時間", "作業時間_分", "出来数", "作業人数", "ステータス"]
 
 # --- 認証とデータ操作関数 ---
+import json # この行をファイルの先頭に追加するのを忘れないでください
+
 @st.cache_resource
 def authorize_gspread():
     """Google Sheets APIへの認証を行い、クライアントオブジェクトを返す"""
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        credentials = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIAL_FILE, scope)
+        # Streamlit CloudのSecretsから認証情報を読み込む
+        creds_json_str = st.secrets["GOOGLE_CREDENTIALS_JSON"]
+        creds_dict = json.loads(creds_json_str)
+        credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         return gspread.authorize(credentials)
-    except Exception as e:
-        st.error(f"❌ Google認証に失敗: {e}")
-        return None
+    except (KeyError, FileNotFoundError):
+        # Secretsがない場合（ローカルでの実行時）は、ファイルから読み込む
+        try:
+            credentials = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIAL_FILE, scope)
+            return gspread.authorize(credentials)
+        except Exception as e:
+            st.error(f"❌ ローカルでのGoogle認証に失敗: {e}")
+            return None
 
 def load_in_progress_data(sheet):
     """「作業中」シートから全データを読み込み、DataFrameとして返す"""
