@@ -3,6 +3,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime, time
 import pandas as pd
+import json
 
 # --- 定数設定 ---
 CREDENTIAL_FILE = "nice-virtue-467105-v3-8aa4dd80c645.json" 
@@ -14,16 +15,25 @@ FOLD_OPTIONS = ["", "4p", "6p", "8p", "16p", "その他"]
 IN_PROGRESS_HEADER = ["記録ID", "製品名", "工程名", "詳細", "開始時間", "終了時間", "作業時間_分", "出来数", "作業人数", "ステータス"]
 
 # --- 認証とデータ操作関数 ---
-import json # この行をファイルの先頭に追加するのを忘れないでください
-
 @st.cache_resource
 def authorize_gspread():
     """Google Sheets APIへの認証を行い、クライアントオブジェクトを返す"""
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
-        # Streamlit CloudのSecretsから認証情報を読み込む
-        creds_json_str = st.secrets["GOOGLE_CREDENTIALS_JSON"]
-        creds_dict = json.loads(creds_json_str)
+        # ▼▼▼ 変更点：新しいSecretsの形式に合わせて認証情報を組み立てる ▼▼▼
+        creds_dict = {
+            "type": st.secrets["type"],
+            "project_id": st.secrets["project_id"],
+            "private_key_id": st.secrets["private_key_id"],
+            "private_key": st.secrets["private_key"],
+            "client_email": st.secrets["client_email"],
+            "client_id": st.secrets["client_id"],
+            "auth_uri": st.secrets["auth_uri"],
+            "token_uri": st.secrets["token_uri"],
+            "auth_provider_x509_cert_url": st.secrets["auth_provider_x509_cert_url"],
+            "client_x509_cert_url": st.secrets["client_x509_cert_url"],
+            "universe_domain": st.secrets["universe_domain"]
+        }
         credentials = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         return gspread.authorize(credentials)
     except (KeyError, FileNotFoundError):
@@ -44,7 +54,7 @@ def load_in_progress_data(sheet):
             df['記録ID'] = df['記録ID'].astype(str)
         return df
     except gspread.exceptions.GSpreadException:
-        return pd.DataFrame() # ヘッダーがない、または空のシートの場合は空のDFを返す
+        return pd.DataFrame()
 
 # --- Streamlit UIの初期設定 ---
 st.set_page_config(layout="wide")
@@ -67,9 +77,7 @@ except Exception as e:
 #  画面①：工程選択画面
 # =======================================================================
 if st.session_state.view == 'SELECT_PROCESS':
-    # この画面が表示されるたびに、最新の「作業中」データを読み込む
     in_progress_df = load_in_progress_data(in_progress_sheet)
-
     col_form, col_list = st.columns(2)
 
     with col_form:
@@ -77,7 +85,6 @@ if st.session_state.view == 'SELECT_PROCESS':
         in_progress_products = [""] 
         if not in_progress_df.empty:
             in_progress_products.extend(sorted(in_progress_df['製品名'].unique()))
-        
         product_choice_options = ["（新規登録）"] + in_progress_products
         selected_choice = st.selectbox("作業対象の製品を選択", product_choice_options, key="product_choice")
         
@@ -86,7 +93,6 @@ if st.session_state.view == 'SELECT_PROCESS':
             product_name = st.text_input("新しい製品名を入力", key="new_product_name_input")
         else:
             product_name = selected_choice
-
         process_name = st.selectbox("記録する工程名", PROCESS_OPTIONS, key="process_name_input")
 
         if st.button("この工程の入力を開始する", type="primary", disabled=(not product_name or not process_name)):
@@ -129,7 +135,6 @@ elif st.session_state.view == 'INPUT_FORM':
         workers = st.number_input("作業人数", min_value=1, step=1)
         
         detail_value, start_time_obj, end_time_obj, work_time_minutes = "", None, None, 0
-
         if st.session_state.selected_process == "断裁":
             time_options = [f"{i*10}" for i in range(1, 12 * 6 + 1)] 
             work_time_minutes = st.selectbox("作業時間（分）", time_options)
@@ -152,7 +157,6 @@ elif st.session_state.view == 'INPUT_FORM':
             if start_time_obj and end_time_obj and end_time_obj <= start_time_obj:
                 st.error("❌ 終了時間は開始時間よりも後の時刻を選択してください。")
                 return
-
             status = "完了" if is_complete else "作業中"
             start_time_str = start_time_obj.strftime('%H:%M') if start_time_obj else ""
             end_time_str = end_time_obj.strftime('%H:%M') if end_time_obj else ""
@@ -162,52 +166,31 @@ elif st.session_state.view == 'INPUT_FORM':
             if is_complete:
                 with st.spinner("完了処理を実行中..."):
                     try:
-                        # ▼▼▼ 変更点：ここからが修正箇所 ▼▼▼
-                        # 完了処理の直前に、必ず最新の「作業中」データを読み込む
                         current_in_progress_df = load_in_progress_data(in_progress_sheet)
                         records_to_complete = []
                         rows_to_delete_ids = []
-
-                        # 既存の作業中データがあるか確認
                         if not current_in_progress_df.empty:
                             product_specific_df = current_in_progress_df[current_in_progress_df['製品名'] == st.session_state.selected_product]
                             if not product_specific_df.empty:
-                                # 既存データを「完了」ステータスでリストに追加
                                 existing_records = [row.tolist() for index, row in product_specific_df.iterrows()]
-                                for record in existing_records:
-                                    record[-1] = "完了"
+                                for record in existing_records: record[-1] = "完了"
                                 records_to_complete.extend(existing_records)
-                                # 削除対象のIDリストを作成
                                 rows_to_delete_ids = product_specific_df['記録ID'].tolist()
-
-                        # 最後に、現在フォームで入力した最終工程を追加
                         records_to_complete.append(final_row_list)
-                        
-                        # 「完了記録」シートに書き込み
-                        if records_to_complete:
-                            completed_sheet.append_rows(records_to_complete, value_input_option='USER_ENTERED')
-                        
-                        # 「作業中」シートから削除（削除対象がある場合のみ）
+                        if records_to_complete: completed_sheet.append_rows(records_to_complete, value_input_option='USER_ENTERED')
                         if rows_to_delete_ids:
                             rows_to_delete = sorted([in_progress_sheet.find(entry_id).row for entry_id in rows_to_delete_ids], reverse=True)
-                            for row_num in rows_to_delete:
-                                in_progress_sheet.delete_rows(row_num)
-
+                            for row_num in rows_to_delete: in_progress_sheet.delete_rows(row_num)
                         st.success(f"✅ 「{st.session_state.selected_product}」の記録を確定しました。")
-                        # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
                     except Exception as e:
                         st.error(f"完了処理中にエラーが発生しました: {e}")
             else:
                 in_progress_sheet.append_row(final_row_list, value_input_option='USER_ENTERED')
                 st.success(f"工程「{st.session_state.selected_process}」を追加しました。")
-            
             st.session_state.view = 'SELECT_PROCESS'
 
-        if add_in_progress_button:
-            run_process(is_complete=False)
-
-        if complete_button:
-            run_process(is_complete=True)
+        if add_in_progress_button: run_process(is_complete=False)
+        if complete_button: run_process(is_complete=True)
 
     if st.button("工程の選択に戻る"):
         st.session_state.view = 'SELECT_PROCESS'
