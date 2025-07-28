@@ -6,7 +6,7 @@ import pandas as pd
 import json
 
 # --- 定数設定 ---
-CREDENTIAL_FILE = "nice-virtue-467105-v3-8aa4dd80c645.json" 
+CREDENTIAL_FILE = "nice-virtue-467105-v3-8aa4dd80c645.json"  
 SHEET_ID = "1D4j2Jyx4tigJ2OipiGNUAQ8hTZPYG8QbKOVCXy_E5Po"
 IN_PROGRESS_SHEET_NAME = "作業中"
 COMPLETED_SHEET_NAME = "完了記録"
